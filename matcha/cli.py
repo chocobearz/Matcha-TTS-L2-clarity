@@ -6,6 +6,7 @@ from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
+import sounddevice as sd
 import soundfile as sf
 import torch
 
@@ -45,8 +46,9 @@ def plot_spectrogram_to_numpy(spectrogram, filename):
     plt.savefig(filename)
 
 
-def process_text(i: int, text: str, device: torch.device):
-    print(f"[{i}] - Input text: {text}")
+def process_text(i: int, text: str, device: torch.device, play):
+    if not play:
+        print(f"[{i}] - Input text: {text}")
     x = torch.tensor(
         intersperse(text_to_sequence(text, ["english_cleaners2"])[0], 0),
         dtype=torch.long,
@@ -54,7 +56,8 @@ def process_text(i: int, text: str, device: torch.device):
     )[None]
     x_lengths = torch.tensor([x.shape[-1]], dtype=torch.long, device=device)
     x_phones = sequence_to_text(x.squeeze(0).tolist())
-    print(f"[{i}] - Phonetised text: {x_phones[1::2]}")
+    if not play:
+        print(f"[{i}] - Phonetised text: {x_phones[1::2]}")
 
     return {"x_orig": text, "x": x, "x_lengths": x_lengths, "x_phones": x_phones}
 
@@ -114,10 +117,11 @@ def load_matcha(model_name, checkpoint_path, device):
     return model
 
 
-def to_waveform(mel, vocoder, denoiser=None, denoiser_strength=0.00025):
+def to_waveform(mel, vocoder, strength, denoiser=None):
     audio = vocoder(mel).clamp(-1, 1)
     if denoiser is not None:
-        audio = denoiser(audio.squeeze(), strength=denoiser_strength).cpu().squeeze()
+        ## I think the denoiser is frozen here
+        audio = denoiser(audio.squeeze(), strength=strength).cpu().squeeze()
 
     return audio.cpu().squeeze()
 
@@ -231,13 +235,15 @@ def cli():
         help="Vocoder to use (default: will use the one suggested with the pretrained model))",
         choices=VOCODER_URLS.keys(),
     )
+    parser.add_argument("--play", action='store_true', default=False, help="Play the synthesized text without saving")
     parser.add_argument("--text", type=str, default=None, help="Text to synthesize")
     parser.add_argument("--file", type=str, default=None, help="Text file to synthesize")
     parser.add_argument("--spk", type=int, default=None, help="Speaker ID")
+    parser.add_argument("--clarity", type=int, default=False, help="Clarity Mode on")
     parser.add_argument(
         "--temperature",
         type=float,
-        default=0.667,
+        default=0.667, # 0.667
         help="Variance of the x0 noise (default: 0.667)",
     )
     parser.add_argument(
@@ -251,7 +257,7 @@ def cli():
     parser.add_argument(
         "--denoiser_strength",
         type=float,
-        default=0.00025,
+        default= 0.000005, # 0.00005 0.00025
         help="Strength of the vocoder bias denoiser (default: 0.00025)",
     )
     parser.add_argument(
@@ -267,9 +273,11 @@ def cli():
 
     args = parser.parse_args()
 
+    play = args.play
     args = validate_args(args)
-    device = get_device(args)
-    print_config(args)
+    device = get_device(args, play)
+    if not play:
+        print_config(args)
     paths = assert_required_models_available(args)
 
     if args.checkpoint_path is not None:
@@ -283,10 +291,15 @@ def cli():
     texts = get_texts(args)
 
     spk = torch.tensor([args.spk], device=device, dtype=torch.long) if args.spk is not None else None
-    if len(texts) == 1 or not args.batched:
-        unbatched_synthesis(args, device, model, vocoder, denoiser, texts, spk)
+    if args.play:
+        if not args.file:
+            play_only_synthesis(args, device, model, vocoder, denoiser, texts, spk, args.denoiser_strength)
+        else:
+            file_synthesis_play_only(args, device, model, vocoder, denoiser, texts, spk, args.denoiser_strength)
+    elif len(texts) == 1 or not args.batched:
+        unbatched_synthesis(args, device, model, vocoder, denoiser, texts, spk, args.denoiser_strength)
     else:
-        batched_synthesis(args, device, model, vocoder, denoiser, texts, spk)
+        batched_synthesis(args, device, model, vocoder, denoiser, texts, spk, args.denoiser_strength)
 
 
 class BatchedSynthesisDataset(torch.utils.data.Dataset):
@@ -313,10 +326,10 @@ def batched_collate_fn(batch):
     return {"x": x, "x_lengths": x_lengths}
 
 
-def batched_synthesis(args, device, model, vocoder, denoiser, texts, spk):
+def batched_synthesis(args, device, model, vocoder, denoiser, texts, spk, denoiser_strength):
     total_rtf = []
     total_rtf_w = []
-    processed_text = [process_text(i, text, "cpu") for i, text in enumerate(texts)]
+    processed_text = [process_text(i, text, "cpu", None) for i, text in enumerate(texts)]
     dataloader = torch.utils.data.DataLoader(
         BatchedSynthesisDataset(processed_text),
         batch_size=args.batch_size,
@@ -334,9 +347,10 @@ def batched_synthesis(args, device, model, vocoder, denoiser, texts, spk):
             temperature=args.temperature,
             spks=spk.expand(b) if spk is not None else spk,
             length_scale=args.speaking_rate,
+            clarity=args.clarity,
         )
 
-        output["waveform"] = to_waveform(output["mel"], vocoder, denoiser, args.denoiser_strength)
+        output["waveform"] = to_waveform(output["mel"], vocoder, denoiser_strength, denoiser)
         t = (dt.datetime.now() - start_t).total_seconds()
         rtf_w = t * 22050 / (output["waveform"].shape[-1])
         print(f"[🍵-Batch: {i}] Matcha-TTS RTF: {output['rtf']:.4f}")
@@ -355,8 +369,83 @@ def batched_synthesis(args, device, model, vocoder, denoiser, texts, spk):
     print(f"[🍵] Average Matcha-TTS + VOCODER RTF: {np.mean(total_rtf_w):.4f} ± {np.std(total_rtf_w)}")
     print("[🍵] Enjoy the freshly whisked 🍵 Matcha-TTS!")
 
+def file_synthesis_play_only(args, device, model, vocoder, denoiser, texts, spk, denoiser_strength):
+    i = 0
+    print("Press enter to play each line 🍵")
+    while i < len(texts):
+      next = input("")
+      if next == "":
 
-def unbatched_synthesis(args, device, model, vocoder, denoiser, texts, spk):
+        split_txt = texts[i].split("|")
+        text = split_txt[0]
+        text = text.strip()
+        spk = int(split_txt[1])
+        spk = torch.tensor([spk], device=device, dtype=torch.long)
+        text_processed = process_text(i, text, device, True)
+
+        output = model.synthesise(
+            text_processed["x"],
+            text_processed["x_lengths"],
+            n_timesteps=args.steps,
+            temperature=args.temperature,
+            spks=spk,
+            length_scale=args.speaking_rate,
+            clarity=args.clarity,
+        )
+        waveform = to_waveform(output["mel"], vocoder, denoiser_strength, denoiser)
+        sd.play(waveform, 22050)
+        sd.wait()
+
+        i = i + 1
+
+def play_only_synthesis(args, device, model, vocoder, denoiser, text, spk, denoiser_strength):
+    play = True
+    text = text[0].strip()
+    print(text)
+    text_processed = process_text(0, text, device, True)
+
+    print(spk)
+
+    output = model.synthesise(
+        text_processed["x"],
+        text_processed["x_lengths"],
+        n_timesteps=args.steps,
+        temperature=args.temperature,
+        spks=spk,
+        length_scale=args.speaking_rate,
+        clarity=args.clarity,
+    )
+    waveform = to_waveform(output["mel"], vocoder, denoiser_strength, denoiser)
+    sd.play(waveform, 22050)
+    sd.wait()
+    while play:
+        text = input("Enter the next text (type Xnow to exit):")
+        if text == "Xnow":
+            print("Thank you for stirring up some Matcha-TTS🍵")
+            play = False
+            break
+        else:
+            spk = int(input("Enter speaker number:"))
+            spk = torch.tensor([spk], device=device, dtype=torch.long)
+            text = text.strip()
+            text_processed = process_text(0, text, device, True)
+
+            output = model.synthesise(
+                text_processed["x"],
+                text_processed["x_lengths"],
+                n_timesteps=args.steps,
+                temperature=args.temperature,
+                spks=spk,
+                length_scale=args.speaking_rate,
+                clarity = args.clarity,
+            )
+            waveform = to_waveform(output["mel"], vocoder, denoiser_strength, denoiser)
+            sd.play(waveform, 22050)
+            sd.wait()
+
+
+
+def unbatched_synthesis(args, device, model, vocoder, denoiser, texts, spk, denoiser_strength):
     total_rtf = []
     total_rtf_w = []
     for i, text in enumerate(texts):
@@ -365,7 +454,7 @@ def unbatched_synthesis(args, device, model, vocoder, denoiser, texts, spk):
 
         print("".join(["="] * 100))
         text = text.strip()
-        text_processed = process_text(i, text, device)
+        text_processed = process_text(i, text, device, None)
 
         print(f"[🍵] Whisking Matcha-T(ea)TS for: {i}")
         start_t = dt.datetime.now()
@@ -376,8 +465,9 @@ def unbatched_synthesis(args, device, model, vocoder, denoiser, texts, spk):
             temperature=args.temperature,
             spks=spk,
             length_scale=args.speaking_rate,
+            clarity=args.clarity,
         )
-        output["waveform"] = to_waveform(output["mel"], vocoder, denoiser, args.denoiser_strength)
+        output["waveform"] = to_waveform(output["mel"], vocoder, denoiser_strength, denoiser)
         # RTF with HiFiGAN
         t = (dt.datetime.now() - start_t).total_seconds()
         rtf_w = t * 22050 / (output["waveform"].shape[-1])
@@ -405,15 +495,19 @@ def print_config(args):
     print(f"\t- Speaker: {args.spk}")
 
 
-def get_device(args):
+def get_device(args, play):
     if torch.cuda.is_available() and not args.cpu:
-        print("[+] GPU Available! Using GPU")
+        if not play:
+            print("[+] GPU Available! Using GPU")
         device = torch.device("cuda")
+        #device = torch.cuda.set_device(1)
     else:
-        print("[-] GPU not available or forced CPU run! Using CPU")
+        if not play:
+            print("[-] GPU not available or forced CPU run! Using CPU")
         device = torch.device("cpu")
     return device
 
 
 if __name__ == "__main__":
     cli()
+
