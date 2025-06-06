@@ -43,8 +43,16 @@ pip install -e .
 
 3. Run CLI
 
+To use the clarity flag a pair of exclamation marks must be used to flag difficult words, e.g. those with minimal pairs (only change by one vowel)
+This can be done by hand or prompting an LLM to do so in an end-to-end system
+
+An example of an input : "I heard them say !pill! not !peel! over by the !pool!"
+
+It is not a concern if words not containing the treated vowel pairs are flagged, this will handled by the TTS
+
 ```bash
 # This will download the required models
+# Remember to add ! ! clarity flags to the INPUT TEXT
 matcha-tts --text "<INPUT TEXT>" --clarity
 ```
 
@@ -55,18 +63,21 @@ or open `synthesis.ipynb` on jupyter notebook adding the clarity flag
 - To synthesise from given with clarity text, run:
 
 ```bash
+# Remember to add ! ! clarity flags to the INPUT TEXT
 matcha-tts --text "<INPUT TEXT>" --clarity
 ```
 
 - To synthesise from a file, run:
 
 ```bash
+# Remember to add ! ! clarity flags to the INPUT TEXT
 matcha-tts --file <PATH TO FILE> --clarity
 ```
 
 - To batch synthesise from a file, run:
 
 ```bash
+# Remember to add ! ! clarity flags to the INPUT TEXT
 matcha-tts --file <PATH TO FILE> --batched --clarity
 ```
 
@@ -75,24 +86,28 @@ Additional arguments
 - Speaking rate
 
 ```bash
+# Remember to add ! ! clarity flags to the INPUT TEXT
 matcha-tts --text "<INPUT TEXT>" --speaking_rate 1.0 --clarity
 ```
 
 - Sampling temperature
 
 ```bash
+# Remember to add ! ! clarity flags to the INPUT TEXT
 matcha-tts --text "<INPUT TEXT>" --temperature 0.667 --clarity
 ```
 
 - Euler ODE solver steps
 
 ```bash
+# Remember to add ! ! clarity flags to the INPUT TEXT
 matcha-tts --text "<INPUT TEXT>" --steps 10 --clarity
 ```
 
 - Direct playback
 
 ```bash
+# Remember to add ! ! clarity flags to the INPUT TEXT
 matcha-tts --text "<INPUT TEXT>" --clarity --play
 ```
 
