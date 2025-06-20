@@ -236,10 +236,10 @@ def cli():
         choices=VOCODER_URLS.keys(),
     )
     parser.add_argument("--play", action='store_true', default=False, help="Play the synthesized text without saving")
+    parser.add_argument("--clarity", action='store_true', type=int, default=False, help="Clarity Mode on")
     parser.add_argument("--text", type=str, default=None, help="Text to synthesize")
     parser.add_argument("--file", type=str, default=None, help="Text file to synthesize")
     parser.add_argument("--spk", type=int, default=None, help="Speaker ID")
-    parser.add_argument("--clarity", type=int, default=False, help="Clarity Mode on")
     parser.add_argument(
         "--temperature",
         type=float,
